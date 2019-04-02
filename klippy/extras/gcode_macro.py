@@ -1,9 +1,10 @@
 # Add ability to define custom g-code macros
 #
-# Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import traceback, logging
+import jinja2
 
 DefaultResult = {'is_enabled': False}
 
@@ -25,11 +26,27 @@ class StatusWrapper:
         res['is_enabled'] = True
         return res
 
+def get_template_environment(printer):
+    env = printer.lookup_object("template_environment", None)
+    if env is not None:
+        return env
+    env = jinja2.Environment('{{', '}}', '{', '}')
+    printer.add_object('template_environment', env)
+    return env
+
 class GCodeMacro:
     def __init__(self, config):
         self.alias = config.get_name().split()[1].upper()
-        self.script = config.get('gcode')
         self.printer = config.get_printer()
+        script = config.get('gcode')
+        env = get_template_environment(self.printer)
+        try:
+            self.template = env.from_string(script)
+        except Exception as e:
+            msg = "Error loading template %s: %s" % (
+                self.alias, traceback.format_exception_only(type(e), e)[-1])
+            logging.exception(msg)
+            raise config.error(msg)
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command(self.alias, self.cmd, desc=self.cmd_desc)
         self.in_script = False
@@ -46,7 +63,7 @@ class GCodeMacro:
         kwparams.update(params)
         kwparams['status'] = StatusWrapper(self.printer)
         try:
-            script = self.script.format(**kwparams)
+            script = str(self.template.render(kwparams))
         except Exception as e:
             msg = "Error evaluating %s: %s" % (
                 self.alias, traceback.format_exception_only(type(e), e)[-1])
